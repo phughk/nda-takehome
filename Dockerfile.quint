@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+#
+# Build a reproducible image that runs the Quint specification for the
+# payments engine (payments.qnt).
+#
+# Quint is fetched from nixpkgs via `nix shell`, exactly as the caller
+# would use it locally.  The nix store is populated at *build* time so
+# runtime containers do not need internet access.
+#
+# Usage
+# -----
+# Build:
+#   docker build -f Dockerfile.quint -t quint-payments .
+#
+# Run all unit tests (default):
+#   docker run --rm quint-payments
+#   docker run --rm quint-payments test
+#
+# Filter tests by name pattern:
+#   docker run --rm quint-payments test --match=chargeback
+#
+# Check the combined safety invariant (random simulation, ~10 000 traces):
+#   docker run --rm quint-payments check
+#
+# Check a specific invariant:
+#   docker run --rm quint-payments check totalEqAvailablePlusHeldInv
+#
+# Tune the simulator:
+#   docker run --rm quint-payments check safetyInv --max-samples=50000
+#
+# Check every invariant in sequence:
+#   docker run --rm quint-payments check-all
+#
+# Pass arbitrary flags to `quint run` (main module is pre-set):
+#   docker run --rm quint-payments run --max-samples=5000 --max-steps=30
+#
+# Raw quint invocation (no implicit spec path):
+#   docker run --rm quint-payments -- quint parse /spec/payments.qnt
+
+FROM nixos/nix:2.24.9
+
+# ── Nix configuration ─────────────────────────────────────────────────────────
+RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
+    echo "sandbox = false"                             >> /etc/nix/nix.conf
+
+# ── Pre-populate the nix store with quint ─────────────────────────────────────
+# Using the exact `nix shell` invocation the user specified.
+# Running `quint --version` inside the shell both proves the package resolved
+# correctly and forces all store paths to be downloaded into this layer.
+# Subsequent `docker run` calls reuse the baked-in store and need no network.
+RUN nix shell \
+        --extra-experimental-features "nix-command flakes" \
+        "github:NixOS/nixpkgs#quint" \
+        --command quint --version
+
+# ── Spec ──────────────────────────────────────────────────────────────────────
+WORKDIR /spec
+COPY payments.qnt .
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
+RUN chmod +x /usr/local/bin/docker-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint"]
+
+# Default: run all named tests
+CMD ["test"]

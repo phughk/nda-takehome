@@ -1,0 +1,26 @@
+# Rust build artefacts
+target/
+Cargo.lock
+
+# Git
+.git/
+.gitignore
+
+# Nix
+result
+result-*
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Docs and other non-spec files
+*.pdf
+*.md
+*.csv
+*.txt
+src/
+tests/
