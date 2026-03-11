@@ -33,4 +33,14 @@ impl TransactionType {
             _ => None,
         }
     }
+
+    pub fn otel_label(&self) -> &'static str {
+        match self {
+            TransactionType::Deposit => "deposit",
+            TransactionType::Withdrawal => "withdrawal",
+            TransactionType::Dispute => "dispute",
+            TransactionType::Resolve => "resolve",
+            TransactionType::Chargeback => "chargeback",
+        }
+    }
 }

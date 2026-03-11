@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use num_bigint::{BigInt, Sign};
 use std::fmt;
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
+use tracing::field::Visit;
 
 const SCALE: i64 = 10_000;
 
@@ -60,7 +61,11 @@ impl fmt::Display for Amount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let scale = BigInt::from(SCALE);
         let is_negative = self.0.sign() == Sign::Minus;
-        let abs = if is_negative { -&self.0 } else { self.0.clone() };
+        let abs = if is_negative {
+            -&self.0
+        } else {
+            self.0.clone()
+        };
         let div = &abs / &scale;
         let rem = &abs % &scale;
         let frac = format!("{:0>4}", rem);
@@ -76,6 +81,14 @@ impl<'a, 'b> Add<&'b Amount> for &'a Amount {
     type Output = Amount;
     fn add(self, other: &'b Amount) -> Amount {
         Amount(&self.0 + &other.0)
+    }
+}
+
+impl<'a> Neg for &'a Amount {
+    type Output = Amount;
+
+    fn neg(self) -> Self::Output {
+        Amount(-&self.0)
     }
 }
 
@@ -105,23 +118,38 @@ mod tests {
     #[test]
     fn test_parse() {
         assert_eq!(Amount::parse("5").unwrap(), Amount::from_major(5));
-        assert_eq!(Amount::parse("5.1").unwrap(), Amount::from_scaled(BigInt::from(51000)));
-        assert_eq!(Amount::parse("5.1234").unwrap(), Amount::from_scaled(BigInt::from(51234)));
-        assert_eq!(Amount::parse("5.12341").unwrap(), Amount::from_scaled(BigInt::from(51234)));
+        assert_eq!(
+            Amount::parse("5.1").unwrap(),
+            Amount::from_scaled(BigInt::from(51000))
+        );
+        assert_eq!(
+            Amount::parse("5.1234").unwrap(),
+            Amount::from_scaled(BigInt::from(51234))
+        );
+        assert_eq!(
+            Amount::parse("5.12341").unwrap(),
+            Amount::from_scaled(BigInt::from(51234))
+        );
         assert_eq!(Amount::parse("0.00001").unwrap(), Amount::zero());
     }
 
     #[test]
     fn test_parse_negative() {
         assert_eq!(Amount::parse("-5").unwrap(), Amount::from_major(-5));
-        assert_eq!(Amount::parse("-5.1234").unwrap(), Amount::from_scaled(BigInt::from(-51234)));
+        assert_eq!(
+            Amount::parse("-5.1234").unwrap(),
+            Amount::from_scaled(BigInt::from(-51234))
+        );
         assert_eq!(Amount::parse("-0.00001").unwrap(), Amount::zero());
     }
 
     #[test]
     fn test_parse_whitespace() {
         assert_eq!(Amount::parse("  5  ").unwrap(), Amount::from_major(5));
-        assert_eq!(Amount::parse(" 5.1234 ").unwrap(), Amount::from_scaled(BigInt::from(51234)));
+        assert_eq!(
+            Amount::parse(" 5.1234 ").unwrap(),
+            Amount::from_scaled(BigInt::from(51234))
+        );
     }
 
     #[test]
@@ -134,11 +162,20 @@ mod tests {
     #[test]
     fn test_display() {
         assert_eq!(Amount::from_major(5).to_string(), "5.0000");
-        assert_eq!(Amount::from_scaled(BigInt::from(51234)).to_string(), "5.1234");
-        assert_eq!(Amount::from_scaled(BigInt::from(51000)).to_string(), "5.1000");
+        assert_eq!(
+            Amount::from_scaled(BigInt::from(51234)).to_string(),
+            "5.1234"
+        );
+        assert_eq!(
+            Amount::from_scaled(BigInt::from(51000)).to_string(),
+            "5.1000"
+        );
         assert_eq!(Amount::zero().to_string(), "0.0000");
         assert_eq!(Amount::from_major(-5).to_string(), "-5.0000");
-        assert_eq!(Amount::from_scaled(BigInt::from(-51234)).to_string(), "-5.1234");
+        assert_eq!(
+            Amount::from_scaled(BigInt::from(-51234)).to_string(),
+            "-5.1234"
+        );
     }
 
     #[test]

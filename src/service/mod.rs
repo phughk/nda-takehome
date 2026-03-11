@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 pub mod pending_transaction;
 
+use crate::domain::account::check_invariants;
 use crate::domain::{Account, ClientId, TransactionType};
 use crate::message::{InputMessage, OutputMessage};
 use crate::metrics::{outcome_kv, tx_type_kv, METRICS};
@@ -119,42 +120,38 @@ impl Service {
 
         while let Some(tx) = buffer.pop() {
             let msg = &tx.message;
-            let client_id = msg.client_id;
-            let transaction_id = msg.transaction_id;
-            let tx_type = msg.transaction_type;
+            let msg_str = format!("{:?}", msg);
+            trace!(msg_str, "Processing pending transaction");
             let mut entry = self
                 .accounts
                 .entry(msg.client_id)
                 .or_insert_with(|| Account::new(msg.client_id));
 
-            let res = match tx_type {
+            let res = match msg.transaction_type {
                 TransactionType::Deposit => entry.process_deposit(msg),
                 TransactionType::Withdrawal => entry.process_withdrawal(msg),
                 TransactionType::Dispute => entry.process_dispute(msg),
                 TransactionType::Resolve => entry.process_resolve(msg),
                 TransactionType::Chargeback => entry.process_chargeback(msg),
             };
-
-            let type_label = match tx_type {
-                TransactionType::Deposit => "deposit",
-                TransactionType::Withdrawal => "withdrawal",
-                TransactionType::Dispute => "dispute",
-                TransactionType::Resolve => "resolve",
-                TransactionType::Chargeback => "chargeback",
-            };
+            check_invariants(&entry);
 
             match &res {
                 Ok(()) => {
-                    METRICS
-                        .service_transactions_processed
-                        .add(1, &[tx_type_kv(type_label), outcome_kv("ok")]);
+                    METRICS.service_transactions_processed.add(
+                        1,
+                        &[
+                            tx_type_kv(msg.transaction_type.otel_label()),
+                            outcome_kv("ok"),
+                        ],
+                    );
                     processed += 1;
                 }
                 Err(e) => {
                     METRICS.service_transactions_processed.add(
                         1,
                         &[
-                            tx_type_kv(type_label),
+                            tx_type_kv(msg.transaction_type.otel_label()),
                             outcome_kv("error"),
                             opentelemetry::KeyValue::new("error", e.to_string()),
                         ],
@@ -164,7 +161,7 @@ impl Service {
             }
 
             tx.callback
-                .send((client_id, transaction_id, res))
+                .send((msg.client_id, msg.transaction_id, res))
                 .context(anyhow!(
                     "Failed to send transaction resolution callback due to closed receiver"
                 ))?;

@@ -30,3 +30,4 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 proptest = "1.6"
 tempfile = "3.27.0"
 tokio-test = "0.4"
+csv = "1.4.0"

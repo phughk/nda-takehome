@@ -10,7 +10,7 @@ pub enum TransactionError {
     #[error("The account is locked")]
     AccountLocked,
     /// A resolve or chargeback was attempted on a transaction that is not currently disputed.
-    #[error("Transaction cannot be resolved because it is not disputed")]
+    #[error("Transaction is not disputed")]
     TransactionNotDisputed,
     /// The referenced transaction ID does not exist in the account.
     #[error("Unable to resolve the transaction")]
@@ -21,4 +21,10 @@ pub enum TransactionError {
     /// A transition attempted to move a transaction back to the Normal state.
     #[error("Unable to revert to a normal state")]
     CannotRevertToNormal,
+    #[error("Cannot accept transaction because the amount is negative")]
+    AmountNegative,
+    #[error("Transaction is already in a terminal state")]
+    TransactionTerminalState,
+    #[error("Cannot dispute an already disputed transaction")]
+    AlreadyDisputed,
 }

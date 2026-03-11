@@ -4,14 +4,16 @@ use futures::stream::FuturesUnordered;
 use nda_takehome::cli::CliArgs;
 use nda_takehome::infrastructure::CsvReader;
 use nda_takehome::message::InputMessage;
-use nda_takehome::metrics::METRICS;
+use nda_takehome::metrics::{EXPORTER, METRICS};
 use nda_takehome::service::config::ServiceConfig;
 use nda_takehome::service::{Service, ServiceMessage};
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::select;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
+use tracing::level_filters::LevelFilter;
 use tracing::{error, trace};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -21,7 +23,11 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> AnyResult<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(EnvFilter::from_default_env())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::OFF.into())
+                .from_env_lossy(),
+        )
         .init();
     let pipeline_start = Instant::now();
     let args = CliArgs::parse();
@@ -70,6 +76,7 @@ async fn main() -> AnyResult<()> {
                 }
             }
         }
+        // TODO add labels
         METRICS.pipeline_transactions_ok.add(ok_count, &[]);
         METRICS.pipeline_transactions_failed.add(err_count, &[]);
         Ok(())
@@ -118,6 +125,10 @@ async fn main() -> AnyResult<()> {
         duration_ms = pipeline_elapsed.as_secs_f64() * 1000.0,
         "Completed"
     );
+    if let Some(provider) = &*EXPORTER {
+        // Force-flush metrics
+        provider.shutdown()?;
+    }
     Ok(())
 }
 

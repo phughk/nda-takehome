@@ -7,10 +7,12 @@
 use lazy_static::lazy_static;
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::KeyValue;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 lazy_static! {
+    pub static ref EXPORTER: Option<SdkMeterProvider> = setup_exporter();
     pub static ref METRICS: Metrics = {
-        setup_exporter();
+        let _initialise_exporter = &*EXPORTER;
         let meter = opentelemetry::global::meter("nda-takehome");
         Metrics {
             // CSV reader
@@ -131,7 +133,7 @@ pub fn outcome_kv(label: &'static str) -> KeyValue {
 }
 
 #[cfg(feature = "metrics_stdout")]
-fn setup_exporter() {
+fn setup_exporter() -> Option<SdkMeterProvider> {
     use opentelemetry_sdk::{metrics::SdkMeterProvider, Resource};
 
     let exporter = opentelemetry_stdout::MetricExporterBuilder::default().build();
@@ -143,10 +145,12 @@ fn setup_exporter() {
                 .build(),
         )
         .build();
-    opentelemetry::global::set_meter_provider(provider);
+    opentelemetry::global::set_meter_provider(provider.clone());
+    Some(provider)
 }
 
 #[cfg(not(feature = "metrics_stdout"))]
-fn setup_exporter() {
+fn setup_exporter() -> Option<SdkMeterProvider> {
     // No-op: metrics are recorded but not exported.
+    None
 }

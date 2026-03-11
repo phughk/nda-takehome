@@ -9,11 +9,11 @@
 //! in any "realistic" way — the goal is to throw arbitrary garbage at the
 //! account and verify it never panics and never violates an invariant.
 
+use nda_takehome::domain::account::check_invariants;
 use nda_takehome::domain::amount::Amount;
 use nda_takehome::message::InputMessage;
 use nda_takehome::{Account, TransactionType};
 use proptest::prelude::*;
-
 // ---------------------------------------------------------------------------
 // Strategy: a single random operation
 // ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ fn apply_op(acc: &mut Account, chrono: u64, op: &Op) {
     //
     // The guard borrows `acc` immutably and runs the full invariant suite
     // when it drops at the end of this scope.
-    let _guard = acc.invariant_guard();
+    check_invariants(acc);
 }
 
 // ---------------------------------------------------------------------------

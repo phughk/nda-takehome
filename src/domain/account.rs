@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
-
 use crate::domain::amount::Amount;
 use crate::domain::ClientId;
 use crate::service::error::TransactionError;
 use crate::{InputMessage, TransactionId};
+use std::collections::{HashMap, HashSet};
+use tracing::warn;
 
 /// A client account that tracks balances and transaction lifecycle states.
 #[derive(Debug, Default, PartialEq)]
@@ -28,8 +28,9 @@ pub struct Account {
     pub resolves: HashSet<TransactionId>,
     /// Transaction IDs in the `Chargeback` state.
     pub chargebacks: HashSet<TransactionId>,
-    /// Amounts currently held per disputed transaction.
-    pub pending_disputes: HashMap<TransactionId, Amount>,
+    /// A debug only history of changes
+    #[cfg(debug_assertions)]
+    pub history_changes: Vec<InputMessage>,
 }
 
 /// The lifecycle state of a transaction within an account.
@@ -60,38 +61,32 @@ impl TransactionState {
         dynamic dispatch is unfavourable. Therefore, enums are a better choice for a general
         purpose state machine that is stored in a vec.
 
-        2) Using properties (ex. "fn must_be_locked(&self) -> bool) instead of matching 2 states
+        2) Using properties (ex. "fn must_be_locked(&self) -> bool") instead of matching 2 states
         means that cases might be missed. We don't want to miss cases, so properties of enums
         are inconvenient.
          */
+        let ok = Ok(ExecuteTransition {
+            from: self,
+            to: target,
+        });
         match (self, target) {
             // No transition can target Normal
             (_, TransactionState::Normal) => Err(TransactionError::CannotRevertToNormal),
             // Chargeback is a terminal state
             (TransactionState::Chargeback, _) => Err(TransactionError::AccountLocked),
-            // Dispute: from Normal, Disputed (cumulative), or Resolved (re-dispute)
-            (
-                TransactionState::Normal | TransactionState::Disputed | TransactionState::Resolved,
-                TransactionState::Disputed,
-            ) => Ok(ExecuteTransition {
-                from: self,
-                to: target,
-            }),
+            (TransactionState::Resolved, _) => Err(TransactionError::TransactionTerminalState),
+            (TransactionState::Disputed, TransactionState::Disputed) => {
+                Err(TransactionError::AlreadyDisputed)
+            }
+            (TransactionState::Normal, TransactionState::Disputed) => ok,
             // Resolve / Chargeback: only from Disputed
             (
                 TransactionState::Disputed,
                 TransactionState::Resolved | TransactionState::Chargeback,
-            ) => Ok(ExecuteTransition {
-                from: self,
-                to: target,
-            }),
+            ) => ok,
             // Cannot resolve or chargeback a transaction that is not disputed
             (
                 TransactionState::Normal,
-                TransactionState::Resolved | TransactionState::Chargeback,
-            ) => Err(TransactionError::TransactionNotDisputed),
-            (
-                TransactionState::Resolved,
                 TransactionState::Resolved | TransactionState::Chargeback,
             ) => Err(TransactionError::TransactionNotDisputed),
         }
@@ -153,16 +148,22 @@ impl Account {
         }
     }
 
-    /// Returns an invariant guard that checks all account invariants on drop (debug builds only).
-    pub fn invariant_guard(&self) -> AccountInvariantGuard<'_> {
-        AccountInvariantGuard::new(self)
+    fn shared_prestep(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
+        check_invariants(self);
+        #[cfg(debug_assertions)]
+        self.history_changes.push(msg.clone());
+        if self.locked {
+            return Err(TransactionError::AccountLocked);
+        }
+        Ok(())
     }
 
     /// Processes a deposit: adds funds to available and total.
     /// Rejects duplicate transaction IDs and operations on locked accounts.
     pub fn process_deposit(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
-        if self.locked {
-            return Err(TransactionError::AccountLocked);
+        self.shared_prestep(msg)?;
+        if !msg.amount.is_positive() {
+            return Err(TransactionError::AmountNegative);
         }
         if self.transactions.contains_key(&msg.transaction_id) {
             return Err(TransactionError::DuplicateTransaction);
@@ -178,8 +179,9 @@ impl Account {
     /// Processes a withdrawal: subtracts funds from available and total.
     /// Rejects if insufficient balance, duplicate transaction, or account locked.
     pub fn process_withdrawal(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
-        if self.locked {
-            return Err(TransactionError::AccountLocked);
+        self.shared_prestep(msg)?;
+        if !msg.amount.is_positive() {
+            return Err(TransactionError::AmountNegative);
         }
         if self.transactions.contains_key(&msg.transaction_id) {
             return Err(TransactionError::DuplicateTransaction);
@@ -198,85 +200,62 @@ impl Account {
     /// Processes a dispute: moves funds from available to held (capped at available balance).
     /// A zero-amount dispute is a no-op. Cumulative disputes on the same transaction are allowed.
     pub fn process_dispute(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
-        if self.locked {
-            return Err(TransactionError::AccountLocked);
-        }
+        self.shared_prestep(msg)?;
         let key = msg.transaction_id;
         let transition = self.do_transition(key, TransactionState::Disputed)?;
-        let disputed_amount = if msg.amount <= self.available {
-            msg.amount.clone()
-        } else {
-            self.available.clone()
-        };
-        if disputed_amount.is_positive() {
-            self.available -= &disputed_amount;
-            self.held += &disputed_amount;
-            *self.pending_disputes.entry(key).or_insert(Amount::zero()) += &disputed_amount;
-            transition.execute(self, key);
-        }
+        let disputed_amount = &self
+            .transactions
+            .get(&key)
+            .ok_or(TransactionError::InvalidTransaction)?
+            .1
+            .amount;
+        let available = self.available.to_string();
+        let held = self.held.to_string();
+        let disp = disputed_amount.to_string();
+        warn!(available, held, disp, "Dispute change");
+        self.available -= &disputed_amount;
+        self.held += &disputed_amount;
+        let available = self.available.to_string();
+        let held = self.held.to_string();
+        warn!(available, held, disp, "After dispute change");
+        transition.execute(self, key);
         Ok(())
     }
 
     /// Processes a resolve: returns held funds back to available.
     /// A partial resolve keeps the transaction in Disputed state with the remaining held amount.
     pub fn process_resolve(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
-        if self.locked {
-            return Err(TransactionError::AccountLocked);
-        }
+        self.shared_prestep(msg)?;
         let key = msg.transaction_id;
         let transition = self.do_transition(key, TransactionState::Resolved)?;
-        let disputed = self
-            .pending_disputes
+        let resolve_amount = &self
+            .transactions
             .get(&key)
-            .ok_or(TransactionError::TransactionNotDisputed)?
-            .clone();
-        let resolve_amount = if msg.amount < disputed {
-            msg.amount.clone()
-        } else {
-            disputed.clone()
-        };
-        if resolve_amount.is_positive() {
-            self.held -= &resolve_amount;
-            self.available += &resolve_amount;
-            let remaining = &disputed - &resolve_amount;
-            if remaining.is_positive() {
-                self.pending_disputes.insert(key, remaining);
-                // Partial resolve: state stays Disputed
-            } else {
-                self.pending_disputes.remove(&key);
-                transition.execute(self, key);
-            }
-        }
+            .ok_or(TransactionError::InvalidTransaction)?
+            .1
+            .amount;
+        self.held -= resolve_amount;
+        self.available += resolve_amount;
+        transition.execute(self, key);
         Ok(())
     }
 
     /// Processes a chargeback: removes held funds from total and locks the account.
     /// Any remaining disputed amount beyond the chargeback is returned to available.
     pub fn process_chargeback(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
-        if self.locked {
-            return Err(TransactionError::AccountLocked);
-        }
+        self.shared_prestep(msg)?;
         let key = msg.transaction_id;
         let transition = self.do_transition(key, TransactionState::Chargeback)?;
-        let disputed = self
-            .pending_disputes
+        let chargeback_amount = &self
+            .transactions
             .get(&key)
-            .ok_or(TransactionError::TransactionNotDisputed)?
-            .clone();
-        let chargeback_amount = if msg.amount < disputed {
-            msg.amount.clone()
-        } else {
-            disputed.clone()
-        };
-        if chargeback_amount.is_positive() {
-            let remaining_disputed = &disputed - &chargeback_amount;
-            self.held -= &disputed;
-            self.total -= &chargeback_amount;
-            self.available += &remaining_disputed;
-            self.locked = true;
-            self.pending_disputes.remove(&key);
-            transition.execute(self, key);
-        }
+            .ok_or(TransactionError::InvalidTransaction)?
+            .1
+            .amount;
+        self.held -= &chargeback_amount;
+        self.total -= &chargeback_amount;
+        self.locked = true;
+        transition.execute(self, key);
         Ok(())
     }
 
@@ -294,205 +273,194 @@ impl Account {
     }
 }
 
-/// Zero-sized in release builds. In debug builds holds a reference to the account
-/// and checks all invariants on drop, panicking if any are violated.
-pub struct AccountInvariantGuard<'a> {
+/// This is a debug only state validation per account
+///
+/// Publicly exposed because it is accessed in fuzzing
+pub fn check_invariants(account: &Account) {
     #[cfg(debug_assertions)]
-    account: &'a Account,
-    #[cfg(not(debug_assertions))]
-    _phantom: std::marker::PhantomData<&'a Account>,
-}
+    {
+        let zero = Amount::zero();
+        let account_dbg = format!("acc={:?}", account);
 
-impl<'a> AccountInvariantGuard<'a> {
-    /// Creates a new invariant guard. In debug builds, stores a reference to the account
-    /// so all invariants can be checked when the guard is dropped.
-    pub fn new(account: &'a Account) -> Self {
-        Self {
-            #[cfg(debug_assertions)]
-            account,
-            #[cfg(not(debug_assertions))]
-            _phantom: std::marker::PhantomData,
+        // ── Balance invariants ──────────────────────────────────────
+        assert!(
+            (account.total >= zero) || account.locked,
+            // A case when the total is below zero is when a deposit is made, then withdrawn,
+            // then the deposit is disputed and charged back. Technically valid, but leave the
+            // account in the red
+            "The total should always be positive, and when it isn't then it is definitely frozen"
+        );
+        assert_eq!(
+            account.total,
+            &account.available + &account.held,
+            "total ({}) must equal available ({}) + held ({})  {account_dbg}",
+            account.total,
+            account.available,
+            account.held,
+        );
+
+        // ── Set-membership invariants ───────────────────────────────
+        // Every transaction in the transactions map must appear in
+        // exactly one of the four state sets.
+        for (&tx_id, (state, _)) in &account.transactions {
+            let in_normal = account.normal.contains(&tx_id);
+            let in_disputes = account.disputes.contains(&tx_id);
+            let in_resolves = account.resolves.contains(&tx_id);
+            let in_chargebacks = account.chargebacks.contains(&tx_id);
+
+            let count =
+                in_normal as u8 + in_disputes as u8 + in_resolves as u8 + in_chargebacks as u8;
+
+            assert_eq!(
+                count, 1,
+                "tx {} is in {} state sets (normal={}, disputes={}, resolves={}, chargebacks={}), expected exactly 1   {account_dbg}",
+                tx_id, count, in_normal, in_disputes, in_resolves, in_chargebacks,
+            );
+
+            // The set the tx is in must match its recorded state.
+            let expected_set = match state {
+                TransactionState::Normal => in_normal,
+                TransactionState::Disputed => in_disputes,
+                TransactionState::Resolved => in_resolves,
+                TransactionState::Chargeback => in_chargebacks,
+            };
+            assert!(
+                expected_set,
+                "tx {} has state {:?} but is not in the matching set (normal={}, disputes={}, resolves={}, chargebacks={})  {account_dbg}",
+                tx_id, state, in_normal, in_disputes, in_resolves, in_chargebacks,
+            );
         }
-    }
-}
 
-impl Drop for AccountInvariantGuard<'_> {
-    fn drop(&mut self) {
-        #[cfg(debug_assertions)]
-        {
-            let a = self.account;
-            let zero = Amount::zero();
-
-            // ── Balance invariants ──────────────────────────────────────
+        // Every entry in each state set must exist in the transactions map.
+        for &tx_id in &account.normal {
             assert!(
-                a.available >= zero,
-                "available must be >= 0, got {}",
-                a.available
+                account.transactions.contains_key(&tx_id),
+                "tx {} in normal set but missing from transactions map   {account_dbg}",
+                tx_id,
             );
-            assert!(a.held >= zero, "held must be >= 0, got {}", a.held);
-            assert!(a.total >= zero, "total must be >= 0, got {}", a.total);
+        }
+        for &tx_id in &account.disputes {
+            assert!(
+                account.transactions.contains_key(&tx_id),
+                "tx {} in disputes set but missing from transactions map   {account_dbg}",
+                tx_id,
+            );
+        }
+        for &tx_id in &account.resolves {
+            assert!(
+                account.transactions.contains_key(&tx_id),
+                "tx {} in resolves set but missing from transactions map   {account_dbg}",
+                tx_id,
+            );
+        }
+        for &tx_id in &account.chargebacks {
+            assert!(
+                account.transactions.contains_key(&tx_id),
+                "tx {} in chargebacks set but missing from transactions map   {account_dbg}",
+                tx_id,
+            );
+        }
+
+        // The union of the four sets must have the same size as the
+        // transactions map — no orphans in either direction.
+        let set_total = account.normal.len()
+            + account.disputes.len()
+            + account.resolves.len()
+            + account.chargebacks.len();
+        assert_eq!(
+            set_total,
+            account.transactions.len(),
+            "state sets total ({}) != transactions map size ({})   {account_dbg}",
+            set_total,
+            account.transactions.len(),
+        );
+
+        // No overlap between sets (belt-and-suspenders — the per-tx
+        // check above covers this, but this catches set-level issues).
+        assert!(
+            account.normal.is_disjoint(&account.disputes),
+            "normal and disputes sets overlap: {:?}   {account_dbg}",
+            account
+                .normal
+                .intersection(&account.disputes)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            account.normal.is_disjoint(&account.resolves),
+            "normal and resolves sets overlap: {:?}   {account_dbg}",
+            account
+                .normal
+                .intersection(&account.resolves)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            account.normal.is_disjoint(&account.chargebacks),
+            "normal and chargebacks sets overlap: {:?}   {account_dbg}",
+            account
+                .normal
+                .intersection(&account.chargebacks)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            account.disputes.is_disjoint(&account.resolves),
+            "disputes and resolves sets overlap: {:?}   {account_dbg}",
+            account
+                .disputes
+                .intersection(&account.resolves)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            account.disputes.is_disjoint(&account.chargebacks),
+            "disputes and chargebacks sets overlap: {:?}   {account_dbg}",
+            account
+                .disputes
+                .intersection(&account.chargebacks)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            account.resolves.is_disjoint(&account.chargebacks),
+            "resolves and chargebacks sets overlap: {:?}   {account_dbg}",
+            account
+                .resolves
+                .intersection(&account.chargebacks)
+                .collect::<Vec<_>>(),
+        );
+
+        // Every disputed tx must have a pending_disputes entry (disputes
+        // only enter the set when a positive amount is moved to held).
+        for &tx_id in &account.disputes {
+            let disputed_opt = account.transactions.get(&tx_id).map(|(state, _)| state);
             assert_eq!(
-                a.total,
-                &a.available + &a.held,
-                "total ({}) must equal available ({}) + held ({})",
-                a.total,
-                a.available,
-                a.held,
+                disputed_opt,
+                Some(&TransactionState::Disputed),
+                "tx {} in disputes set but has no pending_disputes entry",
+                tx_id,
             );
+        }
 
-            // ── Set-membership invariants ───────────────────────────────
-            // Every transaction in the transactions map must appear in
-            // exactly one of the four state sets.
-            for (&tx_id, (state, _)) in &a.transactions {
-                let in_normal = a.normal.contains(&tx_id);
-                let in_disputes = a.disputes.contains(&tx_id);
-                let in_resolves = a.resolves.contains(&tx_id);
-                let in_chargebacks = a.chargebacks.contains(&tx_id);
-
-                let count =
-                    in_normal as u8 + in_disputes as u8 + in_resolves as u8 + in_chargebacks as u8;
-
-                assert_eq!(
-                    count, 1,
-                    "tx {} is in {} state sets (normal={}, disputes={}, resolves={}, chargebacks={}), expected exactly 1",
-                    tx_id, count, in_normal, in_disputes, in_resolves, in_chargebacks,
-                );
-
-                // The set the tx is in must match its recorded state.
-                let expected_set = match state {
-                    TransactionState::Normal => in_normal,
-                    TransactionState::Disputed => in_disputes,
-                    TransactionState::Resolved => in_resolves,
-                    TransactionState::Chargeback => in_chargebacks,
-                };
-                assert!(
-                    expected_set,
-                    "tx {} has state {:?} but is not in the matching set (normal={}, disputes={}, resolves={}, chargebacks={})",
-                    tx_id, state, in_normal, in_disputes, in_resolves, in_chargebacks,
-                );
-            }
-
-            // Every entry in each state set must exist in the transactions map.
-            for &tx_id in &a.normal {
-                assert!(
-                    a.transactions.contains_key(&tx_id),
-                    "tx {} in normal set but missing from transactions map",
-                    tx_id,
-                );
-            }
-            for &tx_id in &a.disputes {
-                assert!(
-                    a.transactions.contains_key(&tx_id),
-                    "tx {} in disputes set but missing from transactions map",
-                    tx_id,
-                );
-            }
-            for &tx_id in &a.resolves {
-                assert!(
-                    a.transactions.contains_key(&tx_id),
-                    "tx {} in resolves set but missing from transactions map",
-                    tx_id,
-                );
-            }
-            for &tx_id in &a.chargebacks {
-                assert!(
-                    a.transactions.contains_key(&tx_id),
-                    "tx {} in chargebacks set but missing from transactions map",
-                    tx_id,
-                );
-            }
-
-            // The union of the four sets must have the same size as the
-            // transactions map — no orphans in either direction.
-            let set_total =
-                a.normal.len() + a.disputes.len() + a.resolves.len() + a.chargebacks.len();
-            assert_eq!(
-                set_total,
-                a.transactions.len(),
-                "state sets total ({}) != transactions map size ({})",
-                set_total,
-                a.transactions.len(),
-            );
-
-            // No overlap between sets (belt-and-suspenders — the per-tx
-            // check above covers this, but this catches set-level issues).
+        // ── Locked-account invariant ────────────────────────────────
+        // If the account is locked, at least one chargeback must exist.
+        if account.locked {
             assert!(
-                a.normal.is_disjoint(&a.disputes),
-                "normal and disputes sets overlap: {:?}",
-                a.normal.intersection(&a.disputes).collect::<Vec<_>>(),
+                !account.chargebacks.is_empty(),
+                "account is locked but no chargebacks recorded",
             );
-            assert!(
-                a.normal.is_disjoint(&a.resolves),
-                "normal and resolves sets overlap: {:?}",
-                a.normal.intersection(&a.resolves).collect::<Vec<_>>(),
-            );
-            assert!(
-                a.normal.is_disjoint(&a.chargebacks),
-                "normal and chargebacks sets overlap: {:?}",
-                a.normal.intersection(&a.chargebacks).collect::<Vec<_>>(),
-            );
-            assert!(
-                a.disputes.is_disjoint(&a.resolves),
-                "disputes and resolves sets overlap: {:?}",
-                a.disputes.intersection(&a.resolves).collect::<Vec<_>>(),
-            );
-            assert!(
-                a.disputes.is_disjoint(&a.chargebacks),
-                "disputes and chargebacks sets overlap: {:?}",
-                a.disputes.intersection(&a.chargebacks).collect::<Vec<_>>(),
-            );
-            assert!(
-                a.resolves.is_disjoint(&a.chargebacks),
-                "resolves and chargebacks sets overlap: {:?}",
-                a.resolves.intersection(&a.chargebacks).collect::<Vec<_>>(),
-            );
+        }
 
-            // ── Pending-disputes invariants ─────────────────────────────
-            // Every pending_dispute key must be in the disputes set.
-            for (&tx_id, amount) in &a.pending_disputes {
-                assert!(
-                    a.disputes.contains(&tx_id),
-                    "pending_dispute for tx {} but tx not in disputes set",
-                    tx_id,
-                );
-                assert!(
-                    *amount > zero,
-                    "pending_dispute for tx {} has non-positive amount {}",
-                    tx_id,
-                    amount,
-                );
-            }
-
-            // Every disputed tx must have a pending_disputes entry (disputes
-            // only enter the set when a positive amount is moved to held).
-            for &tx_id in &a.disputes {
-                assert!(
-                    a.pending_disputes.contains_key(&tx_id),
-                    "tx {} in disputes set but has no pending_disputes entry",
-                    tx_id,
-                );
-            }
-
-            // ── Locked-account invariant ────────────────────────────────
-            // If the account is locked, at least one chargeback must exist.
-            if a.locked {
-                assert!(
-                    !a.chargebacks.is_empty(),
-                    "account is locked but no chargebacks recorded",
-                );
-            }
-
-            // ── Held-amount consistency ─────────────────────────────────
-            // The sum of all pending_disputes amounts must equal held.
-            let pending_sum = a
-                .pending_disputes
+        // ── Held-amount consistency ─────────────────────────────────
+        // The sum of all pending_disputes amounts must equal held.
+        let pending_sum =
+            account
+                .transactions
                 .values()
-                .fold(Amount::zero(), |acc, v| &acc + v);
-            assert_eq!(
-                a.held, pending_sum,
-                "held ({}) != sum of pending_disputes ({})",
-                a.held, pending_sum,
-            );
-        }
+                .fold(Amount::zero(), |acc, (state, msg)| match state {
+                    TransactionState::Disputed => &acc + &msg.amount,
+                    _ => acc,
+                });
+        assert_eq!(
+            account.held, pending_sum,
+            "held ({}) != sum of pending_disputes ({})",
+            account.held, pending_sum,
+        );
     }
 }
