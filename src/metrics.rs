@@ -4,6 +4,9 @@
 //! the global [`METRICS`] singleton. An optional stdout exporter can be enabled
 //! with the `metrics_stdout` feature flag.
 
+#[cfg(feature = "metrics_log")]
+mod metrics_log;
+
 use lazy_static::lazy_static;
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::KeyValue;
@@ -132,25 +135,26 @@ pub fn outcome_kv(label: &'static str) -> KeyValue {
     KeyValue::new("outcome", label)
 }
 
-#[cfg(feature = "metrics_stdout")]
+/// Builds a [`SdkMeterProvider`] that always exports to the tracing log at
+/// `debug` level. When the `metrics_stdout` feature is enabled a second
+/// stdout exporter is added on top.
 fn setup_exporter() -> Option<SdkMeterProvider> {
-    use opentelemetry_sdk::{metrics::SdkMeterProvider, Resource};
+    #[cfg(feature = "metrics_log")]
+    {
+        use opentelemetry_sdk::Resource;
 
-    let exporter = opentelemetry_stdout::MetricExporterBuilder::default().build();
-    let provider = SdkMeterProvider::builder()
-        .with_periodic_exporter(exporter)
-        .with_resource(
-            Resource::builder()
-                .with_service_name("nda-takehome")
-                .build(),
-        )
-        .build();
-    opentelemetry::global::set_meter_provider(provider.clone());
-    Some(provider)
-}
+        let resource = Resource::builder()
+            .with_service_name("nda-takehome")
+            .build();
 
-#[cfg(not(feature = "metrics_stdout"))]
-fn setup_exporter() -> Option<SdkMeterProvider> {
-    // No-op: metrics are recorded but not exported.
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(metrics_log::TraceLevelExporter)
+            .with_resource(resource)
+            .build();
+        opentelemetry::global::set_meter_provider(provider.clone());
+        Some(provider)
+    }
+
+    #[cfg(not(feature = "metrics_log"))]
     None
 }

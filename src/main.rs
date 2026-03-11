@@ -7,7 +7,6 @@ use nda_takehome::message::InputMessage;
 use nda_takehome::metrics::{EXPORTER, METRICS};
 use nda_takehome::service::config::ServiceConfig;
 use nda_takehome::service::{Service, ServiceMessage};
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::select;

@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use num_bigint::{BigInt, Sign};
 use std::fmt;
 use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
-use tracing::field::Visit;
 
 const SCALE: i64 = 10_000;
 
