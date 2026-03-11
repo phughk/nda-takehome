@@ -13,6 +13,7 @@ const SCALE: i64 = 10_000;
 pub struct Amount(BigInt);
 
 impl Amount {
+    /// Returns an amount representing zero.
     pub fn zero() -> Self {
         Amount(BigInt::ZERO)
     }
@@ -49,6 +50,7 @@ impl Amount {
         }
     }
 
+    /// Returns `true` if the amount is strictly greater than zero.
     pub fn is_positive(&self) -> bool {
         self.0.sign() == Sign::Plus
     }

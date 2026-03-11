@@ -8,6 +8,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 use std::path::Path;
 
+/// Raw CSV row before domain parsing.
 #[derive(Debug, Deserialize)]
 struct RawInputMessage {
     r#type: String,
@@ -16,18 +17,23 @@ struct RawInputMessage {
     amount: String,
 }
 
+/// Asynchronously reads a CSV file and parses rows into [`InputMessage`]s.
 #[derive(Debug)]
 pub struct CsvReader {
+    /// Path to the CSV file.
     path: String,
 }
 
 impl CsvReader {
+    /// Creates a new reader for the given file path.
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         Self {
             path: path.as_ref().display().to_string(),
         }
     }
 
+    /// Reads all rows from the CSV file, returning parsed [`InputMessage`]s
+    /// ordered by their position in the file (chrono order).
     pub async fn read_messages(&self) -> Result<Vec<InputMessage>> {
         METRICS.csv_files_loaded.add(1, &[]);
 

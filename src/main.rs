@@ -121,6 +121,8 @@ async fn main() -> AnyResult<()> {
     Ok(())
 }
 
+/// Reads a CSV file, sends each parsed message via `record_callback`,
+/// then signals completion via `file_callback`.
 async fn load_file<
     ItemCallback: AsyncFn(Box<InputMessage>) -> AnyResult<()>,
     FileCallback: AsyncFnOnce() -> AnyResult<()>,

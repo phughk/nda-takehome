@@ -4,14 +4,21 @@ use crate::Account;
 use serde::{Serialize, Serializer};
 use std::cmp::Ordering;
 
+/// A parsed transaction from the CSV input.
+///
 /// Chrono order is the sequence number (total order) of the event/message.
-/// It is at the top of the struct for derive Ord convenience
+/// `Ord` is reversed so a `BinaryHeap` processes oldest messages first.
 #[derive(Debug, Clone)]
 pub struct InputMessage {
+    /// Monotonically increasing sequence number assigned at parse time.
     pub chrono_order: u64,
+    /// The operation this message represents.
     pub transaction_type: TransactionType,
+    /// The client this transaction belongs to.
     pub client_id: ClientId,
+    /// Unique transaction identifier.
     pub transaction_id: TransactionId,
+    /// The monetary amount for the operation.
     pub amount: Amount,
 }
 
@@ -42,12 +49,18 @@ impl PartialOrd for InputMessage {
     }
 }
 
+/// A snapshot of an account's balances for CSV output.
 #[derive(Debug)]
 pub struct OutputMessage<'a> {
+    /// The client this snapshot belongs to.
     pub client_id: &'a ClientId,
+    /// Funds available for withdrawal.
     pub available: &'a Amount,
+    /// Funds held due to pending disputes.
     pub held: &'a Amount,
+    /// Total funds (`available + held`).
     pub total: &'a Amount,
+    /// Whether the account is frozen.
     pub locked: &'a bool,
 }
 

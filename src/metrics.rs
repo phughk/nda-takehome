@@ -1,3 +1,9 @@
+//! OpenTelemetry metrics for observability across the pipeline.
+//!
+//! All instruments are initialised once via `lazy_static` and accessed through
+//! the global [`METRICS`] singleton. An optional stdout exporter can be enabled
+//! with the `metrics_stdout` feature flag.
+
 use lazy_static::lazy_static;
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::KeyValue;
@@ -81,8 +87,10 @@ lazy_static! {
     };
 }
 
+/// Container for all OpenTelemetry metric instruments used across the application.
 pub struct Metrics {
     // CSV reader
+    /// Number of CSV files loaded.
     pub csv_files_loaded: Counter<u64>,
     pub csv_parse_errors: Counter<u64>,
     pub csv_rows_parsed: Counter<u64>,

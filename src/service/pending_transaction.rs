@@ -3,9 +3,12 @@ use crate::{ClientId, InputMessage, TransactionId};
 use std::cmp::Ordering;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// Used to track messages in the buffer
+/// A buffered transaction awaiting processing, paired with a callback channel
+/// for reporting the outcome. Ordered by the underlying [`InputMessage`] for heap-based sorting.
 pub struct PendingTransaction {
+    /// The transaction message to process.
     pub message: Box<InputMessage>,
+    /// Channel to send the transaction result back to the caller.
     pub callback: UnboundedSender<(ClientId, TransactionId, Result<(), TransactionError>)>,
 }
 

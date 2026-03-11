@@ -1,3 +1,5 @@
+//! Core domain types: accounts, amounts, transactions, and test helpers.
+
 pub mod account;
 pub mod amount;
 pub mod sequencer;

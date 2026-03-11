@@ -4,10 +4,12 @@ use crate::service::error::TransactionError;
 use crate::{ClientId, ServiceMessage, TransactionId, TransactionType};
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Test helper that creates [`ServiceMessage`]s with auto-incrementing chrono order.
 #[derive(Default)]
 pub struct MessageSequencer(u64);
 
 impl MessageSequencer {
+    /// Builds a [`ServiceMessage::Incoming`] with the next chrono order value.
     pub fn create_message(
         &mut self,
         client_id: ClientId,

@@ -1,3 +1,5 @@
+//! Transaction processing service with batched execution and snapshot output.
+
 pub mod config;
 pub mod error;
 pub mod pending_transaction;
@@ -22,13 +24,20 @@ use tokio::sync::oneshot::Sender;
 use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
+/// The core transaction processing engine.
+///
+/// Receives messages via a channel, buffers them in a `BinaryHeap` for
+/// chronological ordering, and flushes batches of transactions to per-client accounts.
 #[derive(Default)]
 pub struct Service {
+    /// Batch size and other tuning parameters.
     config: ServiceConfig,
+    /// Concurrent map of client accounts.
     accounts: DashMap<ClientId, Account>,
 }
 
 impl Service {
+    /// Creates a new service wrapped in an `Arc` for shared ownership across tasks.
     pub fn new(config: ServiceConfig) -> Arc<Self> {
         Arc::new(Self {
             config,
@@ -36,6 +45,8 @@ impl Service {
         })
     }
 
+    /// Runs the event loop, receiving messages until cancellation or channel close.
+    /// Flushes any remaining buffered messages before returning.
     pub async fn server_forever(
         self: Arc<Self>,
         ctx: CancellationToken,
@@ -60,6 +71,7 @@ impl Service {
         Ok(())
     }
 
+    /// Handles a single incoming service message: buffers transactions or processes a batch completion signal.
     async fn iteration(
         &self,
         msg: ServiceMessage,
@@ -170,6 +182,7 @@ impl Service {
         Ok(())
     }
 
+    /// Serializes all account states to CSV via the given async writer.
     pub async fn write_snapshot<Writer>(&self, writer: Writer) -> AnyResult<()>
     where
         Writer: AsyncWrite + Unpin,
@@ -203,13 +216,14 @@ impl Service {
     }
 }
 
+/// Messages sent to the [`Service`] event loop.
 pub enum ServiceMessage {
-    /// Tracks incoming messages as they are loaded
+    /// A transaction to be buffered and processed.
     Incoming(
         Box<InputMessage>,
         UnboundedSender<(ClientId, TransactionId, Result<(), TransactionError>)>,
     ),
-    /// Helps to report a dataset is completely loaded
+    /// Signal that all transactions have been loaded; flushes the buffer and acknowledges via the oneshot.
     TransactionBatchCompletion(Sender<()>),
 }
 

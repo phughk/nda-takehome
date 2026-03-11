@@ -1,3 +1,9 @@
+//! A payments engine that processes CSV transaction streams.
+//!
+//! Reads deposits, withdrawals, disputes, resolves, and chargebacks from CSV
+//! input, applies them to per-client accounts, and writes account snapshots
+//! to CSV output.
+
 pub mod cli;
 pub mod domain;
 pub mod infrastructure;

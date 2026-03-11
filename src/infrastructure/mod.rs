@@ -1,3 +1,5 @@
+//! I/O adapters for reading and writing CSV transaction data.
+
 pub mod csv_reader;
 pub mod csv_writer;
 

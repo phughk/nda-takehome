@@ -5,31 +5,50 @@ use crate::domain::ClientId;
 use crate::service::error::TransactionError;
 use crate::{InputMessage, TransactionId};
 
+/// A client account that tracks balances and transaction lifecycle states.
 #[derive(Debug, Default, PartialEq)]
 pub struct Account {
+    /// Unique client identifier.
     pub client_id: ClientId,
+    /// Funds available for withdrawal.
     pub available: Amount,
+    /// Funds held due to pending disputes.
     pub held: Amount,
+    /// Total funds (`available + held`).
     pub total: Amount,
+    /// Whether the account is frozen after a chargeback.
     pub locked: bool,
+    /// All recorded transactions keyed by ID, with their current state.
     pub(crate) transactions: HashMap<TransactionId, (TransactionState, InputMessage)>,
+    /// Transaction IDs in the `Normal` state.
     pub normal: HashSet<TransactionId>,
+    /// Transaction IDs in the `Disputed` state.
     pub disputes: HashSet<TransactionId>,
+    /// Transaction IDs in the `Resolved` state.
     pub resolves: HashSet<TransactionId>,
+    /// Transaction IDs in the `Chargeback` state.
     pub chargebacks: HashSet<TransactionId>,
+    /// Amounts currently held per disputed transaction.
     pub pending_disputes: HashMap<TransactionId, Amount>,
 }
 
+/// The lifecycle state of a transaction within an account.
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub(crate) enum TransactionState {
+    /// Initial state after deposit or withdrawal.
     #[default]
     Normal,
+    /// Transaction is under dispute; funds moved from available to held.
     Disputed,
+    /// Dispute has been resolved; funds returned to available.
     Resolved,
+    /// Dispute resulted in a chargeback; account is locked.
     Chargeback,
 }
 
 impl TransactionState {
+    /// Validates whether a state transition is allowed, returning the transition
+    /// descriptor on success or an error explaining why it was rejected.
     fn can_transition(
         self,
         target: TransactionState,
@@ -79,12 +98,17 @@ impl TransactionState {
     }
 }
 
+/// Describes a validated state transition to be applied to an account.
 struct ExecuteTransition {
+    /// State the transaction is moving from.
     from: TransactionState,
+    /// State the transaction is moving to.
     to: TransactionState,
 }
 
 impl ExecuteTransition {
+    /// Applies the state transition: removes the transaction from its old state set,
+    /// inserts it into the new one, and updates the transactions map.
     fn execute(self, acc: &mut Account, key: TransactionId) {
         match self.from {
             TransactionState::Normal => {
@@ -121,6 +145,7 @@ impl ExecuteTransition {
 }
 
 impl Account {
+    /// Creates a new account with zero balances for the given client.
     pub fn new(client_id: ClientId) -> Self {
         Self {
             client_id,
@@ -128,10 +153,13 @@ impl Account {
         }
     }
 
+    /// Returns an invariant guard that checks all account invariants on drop (debug builds only).
     pub fn invariant_guard(&self) -> AccountInvariantGuard<'_> {
         AccountInvariantGuard::new(self)
     }
 
+    /// Processes a deposit: adds funds to available and total.
+    /// Rejects duplicate transaction IDs and operations on locked accounts.
     pub fn process_deposit(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
         if self.locked {
             return Err(TransactionError::AccountLocked);
@@ -147,6 +175,8 @@ impl Account {
         Ok(())
     }
 
+    /// Processes a withdrawal: subtracts funds from available and total.
+    /// Rejects if insufficient balance, duplicate transaction, or account locked.
     pub fn process_withdrawal(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
         if self.locked {
             return Err(TransactionError::AccountLocked);
@@ -165,6 +195,8 @@ impl Account {
         Ok(())
     }
 
+    /// Processes a dispute: moves funds from available to held (capped at available balance).
+    /// A zero-amount dispute is a no-op. Cumulative disputes on the same transaction are allowed.
     pub fn process_dispute(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
         if self.locked {
             return Err(TransactionError::AccountLocked);
@@ -185,6 +217,8 @@ impl Account {
         Ok(())
     }
 
+    /// Processes a resolve: returns held funds back to available.
+    /// A partial resolve keeps the transaction in Disputed state with the remaining held amount.
     pub fn process_resolve(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
         if self.locked {
             return Err(TransactionError::AccountLocked);
@@ -216,6 +250,8 @@ impl Account {
         Ok(())
     }
 
+    /// Processes a chargeback: removes held funds from total and locks the account.
+    /// Any remaining disputed amount beyond the chargeback is returned to available.
     pub fn process_chargeback(&mut self, msg: &InputMessage) -> Result<(), TransactionError> {
         if self.locked {
             return Err(TransactionError::AccountLocked);
@@ -244,6 +280,7 @@ impl Account {
         Ok(())
     }
 
+    /// Looks up a transaction and validates whether it can transition to `target`.
     fn do_transition(
         &self,
         tx_id: TransactionId,
@@ -267,6 +304,8 @@ pub struct AccountInvariantGuard<'a> {
 }
 
 impl<'a> AccountInvariantGuard<'a> {
+    /// Creates a new invariant guard. In debug builds, stores a reference to the account
+    /// so all invariants can be checked when the guard is dropped.
     pub fn new(account: &'a Account) -> Self {
         Self {
             #[cfg(debug_assertions)]

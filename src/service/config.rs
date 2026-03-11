@@ -1,4 +1,6 @@
+/// Configuration for the transaction processing [`Service`](super::Service).
 pub struct ServiceConfig {
+    /// Number of messages to buffer before flushing a batch.
     pub batch_size: usize,
 }
 
