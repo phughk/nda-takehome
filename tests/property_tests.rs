@@ -188,18 +188,31 @@ proptest! {
         }
     }
 
-    /// Available balance must never be negative.
+    /// Available balance may go negative when a deposit is disputed after a
+    /// partial withdrawal — the dispute reverses the full original deposit
+    /// amount regardless of the current available balance.  This test verifies
+    /// that held is never negative and that total == available + held holds.
     #[test]
-    fn available_never_negative(rows in csv_rows_strategy(50)) {
+    fn held_and_total_consistency_on_dispute(rows in csv_rows_strategy(50)) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let accounts = rt.block_on(run_engine(&rows)).unwrap();
         for acc in &accounts {
             let available = parse_amount(&acc.available);
-            prop_assert!(
-                available >= -0.00005,
-                "client {}: negative available = {}",
-                acc.client, acc.available
-            );
+            let held = parse_amount(&acc.held);
+            let total = parse_amount(&acc.total);
+            // held is always non-negative
+            prop_assert!(held >= -0.00005, "client {}: negative held = {}", acc.client, acc.held);
+            // total == available + held (checked by total_equals_available_plus_held too)
+            let diff = (total - (available + held)).abs();
+            prop_assert!(diff < 0.00015, "client {}: total != available + held", acc.client);
+            // total is non-negative unless the account is locked
+            if !acc.locked {
+                prop_assert!(
+                    total >= -0.00005,
+                    "client {}: unlocked account has negative total = {}",
+                    acc.client, acc.total
+                );
+            }
         }
     }
 
@@ -218,18 +231,22 @@ proptest! {
         }
     }
 
-    /// Total balance must never be negative.
+    /// Total balance must never be negative on an unlocked account.  A locked
+    /// account (post-chargeback) may have a negative total when the chargedback
+    /// deposit had already been partially withdrawn.
     #[test]
     fn total_never_negative(rows in csv_rows_strategy(50)) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let accounts = rt.block_on(run_engine(&rows)).unwrap();
         for acc in &accounts {
-            let total = parse_amount(&acc.total);
-            prop_assert!(
-                total >= -0.00005,
-                "client {}: negative total = {}",
-                acc.client, acc.total
-            );
+            if !acc.locked {
+                let total = parse_amount(&acc.total);
+                prop_assert!(
+                    total >= -0.00005,
+                    "client {}: unlocked account has negative total = {}",
+                    acc.client, acc.total
+                );
+            }
         }
     }
 
@@ -317,30 +334,27 @@ proptest! {
         prop_assert_eq!(accounts[0].locked, false);
     }
 
-    /// Deposit → dispute → chargeback locks the account and removes the disputed amount.
+    /// Deposit → dispute → chargeback locks the account and removes the full
+    /// deposit amount.  The dispute and chargeback messages use the stored
+    /// transaction amount regardless of any amount field in the message, so
+    /// the result is always available=0, held=0, total=0, locked=true.
     #[test]
     fn dispute_chargeback_locks_and_removes(
         deposit in 100u64..=100_000u64,
-        dispute_frac in 1u32..=100u32,
     ) {
-        let dispute_amt = (deposit * dispute_frac as u64) / 100;
-        let dispute_amt = dispute_amt.max(1); // at least 1
-        let remaining = deposit - dispute_amt;
-
         let rows = vec![
             CsvRow { tx_type: "deposit".to_string(), client: 1, tx: 1, amount: format!("{}.0000", deposit) },
-            CsvRow { tx_type: "dispute".to_string(), client: 1, tx: 1, amount: format!("{}.0000", dispute_amt) },
-            CsvRow { tx_type: "chargeback".to_string(), client: 1, tx: 1, amount: format!("{}.0000", dispute_amt) },
+            CsvRow { tx_type: "dispute".to_string(), client: 1, tx: 1, amount: String::new() },
+            CsvRow { tx_type: "chargeback".to_string(), client: 1, tx: 1, amount: String::new() },
         ];
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let accounts = rt.block_on(run_engine(&rows)).unwrap();
 
-        let expected_remaining = format!("{}.0000", remaining);
         prop_assert_eq!(accounts.len(), 1);
-        prop_assert_eq!(&accounts[0].available, &expected_remaining);
+        prop_assert_eq!(&accounts[0].available, "0.0000");
         prop_assert_eq!(&accounts[0].held, "0.0000");
-        prop_assert_eq!(&accounts[0].total, &expected_remaining);
+        prop_assert_eq!(&accounts[0].total, "0.0000");
         prop_assert!(accounts[0].locked, "account should be locked after chargeback");
     }
 

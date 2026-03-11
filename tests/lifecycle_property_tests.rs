@@ -37,15 +37,11 @@ fn assert_invariants(acc: &Account, ctx: &str) {
     let zero = Amount::zero();
 
     // Balance invariants
-    assert!(
-        acc.available >= zero,
-        "{ctx}: available ({}) must be >= 0",
-        acc.available
-    );
+    // Note: available CAN be negative when a deposit is disputed after a partial withdrawal.
     assert!(acc.held >= zero, "{ctx}: held ({}) must be >= 0", acc.held);
     assert!(
-        acc.total >= zero,
-        "{ctx}: total ({}) must be >= 0",
+        acc.total >= zero || acc.locked,
+        "{ctx}: total ({}) must be >= 0, or the account must be locked",
         acc.total
     );
     assert_eq!(
@@ -193,7 +189,6 @@ proptest! {
     #[test]
     fn chargeback_locks_permanently(
         deposit in 10i64..=10_000,
-        dispute_amt in 1i64..=10_000,
         post_ops in prop::collection::vec(
             (0u8..5, 1i64..=1000, 100u32..200),
             1..20
@@ -203,18 +198,12 @@ proptest! {
         let msg = make_msg(0, TransactionType::Deposit, 1, 1, deposit);
         acc.process_deposit(&msg).unwrap();
 
-        let d_amt = dispute_amt.min(deposit);
-        let msg = make_msg(1, TransactionType::Dispute, 1, 1, d_amt);
-        let _ = acc.process_dispute(&msg);
+        // Dispute and chargeback both use the stored deposit amount (msg.amount is ignored)
+        let msg = make_msg(1, TransactionType::Dispute, 1, 1, 0);
+        acc.process_dispute(&msg).unwrap();
 
-        let msg = make_msg(2, TransactionType::Chargeback, 1, 1, d_amt);
-        let _ = acc.process_chargeback(&msg);
-
-        if !acc.locked {
-            // Chargeback may have been a no-op if disputed_amount was zero;
-            // skip the rest of this case.
-            return Ok(());
-        }
+        let msg = make_msg(2, TransactionType::Chargeback, 1, 1, 0);
+        acc.process_chargeback(&msg).unwrap();
 
         let frozen_available = acc.available.clone();
         let frozen_held = acc.held.clone();
@@ -250,12 +239,13 @@ proptest! {
         }
     }
 
-    /// Dispute/resolve is a lossless round-trip: disputing N then resolving N
-    /// returns available/held to exactly their pre-dispute values.
+    /// Dispute/resolve is a lossless round-trip: disputing then resolving the
+    /// same transaction returns available/held to exactly their pre-dispute values.
+    /// The dispute and resolve always operate on the original stored deposit amount,
+    /// regardless of any amount field in the dispute/resolve message.
     #[test]
     fn dispute_resolve_roundtrip_exact(
         deposit in 100i64..=100_000,
-        dispute_amt in 1i64..=100_000,
     ) {
         let mut acc = Account::new(1);
         let msg = make_msg(0, TransactionType::Deposit, 1, 1, deposit);
@@ -264,18 +254,18 @@ proptest! {
         let pre_available = acc.available.clone();
         let pre_held = acc.held.clone();
 
-        let effective_dispute = dispute_amt.min(deposit);
-        let msg = make_msg(1, TransactionType::Dispute, 1, 1, effective_dispute);
-        let _ = acc.process_dispute(&msg);
+        // Dispute uses the stored deposit amount (not msg.amount)
+        let msg = make_msg(1, TransactionType::Dispute, 1, 1, 0);
+        acc.process_dispute(&msg).unwrap();
         assert_invariants(&acc, "after dispute");
 
-        // Held should have increased by exactly the effective amount
-        let expected_held = &pre_held + &Amount::from_major(effective_dispute);
+        // Held should have increased by exactly the stored deposit amount
+        let expected_held = &pre_held + &Amount::from_major(deposit);
         prop_assert_eq!(&acc.held, &expected_held);
 
-        // Now resolve the full disputed amount
-        let msg = make_msg(2, TransactionType::Resolve, 1, 1, effective_dispute);
-        let _ = acc.process_resolve(&msg);
+        // Resolve also uses the stored deposit amount
+        let msg = make_msg(2, TransactionType::Resolve, 1, 1, 0);
+        acc.process_resolve(&msg).unwrap();
         assert_invariants(&acc, "after resolve");
 
         prop_assert_eq!(&acc.available, &pre_available, "available not restored after dispute+resolve");
@@ -330,35 +320,34 @@ proptest! {
         }
     }
 
-    /// Dispute then chargeback: total decreases by exactly the chargeback
-    /// amount, held goes to zero, and the account is locked.
+    /// Dispute then chargeback: total decreases by the original deposit amount
+    /// (both dispute and chargeback use the stored transaction amount, not
+    /// the amount field in the dispute/chargeback message), held goes to zero,
+    /// and the account is locked.
     #[test]
     fn dispute_chargeback_accounting(
         deposit in 100i64..=100_000,
-        dispute_amt in 1i64..=100_000,
-        chargeback_amt in 1i64..=100_000,
     ) {
         let mut acc = Account::new(1);
         let msg = make_msg(0, TransactionType::Deposit, 1, 1, deposit);
         acc.process_deposit(&msg).unwrap();
 
-        let effective_dispute = dispute_amt.min(deposit);
-        let msg = make_msg(1, TransactionType::Dispute, 1, 1, effective_dispute);
-        let _ = acc.process_dispute(&msg);
+        let total_before = acc.total.clone();
+
+        // Dispute uses the stored deposit amount
+        let msg = make_msg(1, TransactionType::Dispute, 1, 1, 0);
+        acc.process_dispute(&msg).unwrap();
         assert_invariants(&acc, "after dispute");
 
-        let effective_chargeback = chargeback_amt.min(effective_dispute);
-        let total_before = acc.total.clone();
-        let msg = make_msg(2, TransactionType::Chargeback, 1, 1, effective_chargeback);
-        let _ = acc.process_chargeback(&msg);
+        // Chargeback also uses the stored deposit amount
+        let msg = make_msg(2, TransactionType::Chargeback, 1, 1, 0);
+        acc.process_chargeback(&msg).unwrap();
         assert_invariants(&acc, "after chargeback");
 
-        if effective_chargeback > 0 {
-            let expected_total = &total_before - &Amount::from_major(effective_chargeback);
-            prop_assert_eq!(&acc.total, &expected_total, "total should decrease by chargeback amount");
-            prop_assert_eq!(&acc.held, &Amount::zero(), "held should be zero after chargeback");
-            prop_assert!(acc.locked, "account should be locked after chargeback");
-        }
+        let expected_total = &total_before - &Amount::from_major(deposit);
+        prop_assert_eq!(&acc.total, &expected_total, "total should decrease by the deposit amount");
+        prop_assert_eq!(&acc.held, &Amount::zero(), "held should be zero after chargeback");
+        prop_assert!(acc.locked, "account should be locked after chargeback");
     }
 
     /// Tx ID uniqueness: the same tx ID used for two deposits on the same
@@ -429,40 +418,39 @@ proptest! {
         prop_assert_eq!(result, Err(TransactionError::TransactionNotDisputed));
     }
 
-    /// Re-dispute after resolve: a resolved transaction can be disputed again,
-    /// moving funds back into held.
+    /// Re-dispute after resolve: `Resolved` is a terminal state so re-disputing
+    /// must return `TransactionTerminalState` and leave balances unchanged.
     #[test]
-    fn redispute_after_resolve(
+    fn redispute_after_resolve_is_rejected(
         deposit in 100i64..=10_000,
-        dispute1 in 1i64..=5_000,
-        dispute2 in 1i64..=5_000,
     ) {
         let mut acc = Account::new(1);
         let msg = make_msg(0, TransactionType::Deposit, 1, 1, deposit);
         acc.process_deposit(&msg).unwrap();
 
-        let d1 = dispute1.min(deposit);
-        let msg = make_msg(1, TransactionType::Dispute, 1, 1, d1);
-        let _ = acc.process_dispute(&msg);
-        assert_invariants(&acc, "after dispute1");
+        // Dispute uses stored deposit amount
+        let msg = make_msg(1, TransactionType::Dispute, 1, 1, 0);
+        acc.process_dispute(&msg).unwrap();
+        assert_invariants(&acc, "after dispute");
 
-        let msg = make_msg(2, TransactionType::Resolve, 1, 1, d1);
-        let _ = acc.process_resolve(&msg);
+        // Resolve returns funds to available
+        let msg = make_msg(2, TransactionType::Resolve, 1, 1, 0);
+        acc.process_resolve(&msg).unwrap();
         assert_invariants(&acc, "after resolve");
 
         // Account should be fully available again
         prop_assert_eq!(&acc.available, &Amount::from_major(deposit));
         prop_assert_eq!(&acc.held, &Amount::zero());
 
-        // Re-dispute
-        let d2 = dispute2.min(deposit);
-        let msg = make_msg(3, TransactionType::Dispute, 1, 1, d2);
+        // Re-dispute must fail — Resolved is a terminal state
+        let msg = make_msg(3, TransactionType::Dispute, 1, 1, 0);
         let result = acc.process_dispute(&msg);
-        assert_invariants(&acc, "after redispute");
+        assert_invariants(&acc, "after attempted redispute");
 
-        prop_assert!(result.is_ok(), "re-dispute after resolve should succeed");
-        prop_assert_eq!(&acc.held, &Amount::from_major(d2));
-        prop_assert_eq!(&acc.available, &Amount::from_major(deposit - d2));
+        prop_assert_eq!(result, Err(TransactionError::TransactionTerminalState));
+        // Balances must be unchanged
+        prop_assert_eq!(&acc.available, &Amount::from_major(deposit));
+        prop_assert_eq!(&acc.held, &Amount::zero());
     }
 
     /// Full multi-phase lifecycle on multiple transactions: deposits,
