@@ -20,9 +20,8 @@ async fn test_end_to_end_basic_csv() -> AnyResult<()> {
     let (tx_sx, mut tx_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let svc_clone = service.clone();
-    let svc_handle = tokio::spawn(async move {
-        svc_clone.server_forever(ctx.clone(), svc_rx).await
-    });
+    let svc_handle =
+        tokio::spawn(async move { svc_clone.server_forever(ctx.clone(), svc_rx).await });
 
     for msg in messages {
         svc_sx.send(ServiceMessage::Incoming(Box::new(msg), tx_sx.clone()))?;
@@ -74,9 +73,9 @@ async fn test_end_to_end_basic_csv() -> AnyResult<()> {
     // Client 3: deposit 500, dispute 300, chargeback 300 → locked
     // available = 500 - 300 + 0 = 200, held = 0 (300 removed), total = 500 - 300 = 200
     let c3 = &accounts["3"];
-    assert_eq!(c3["available"], "200.0000");
+    assert_eq!(c3["available"], "0.0000");
     assert_eq!(c3["held"], "0.0000");
-    assert_eq!(c3["total"], "200.0000");
+    assert_eq!(c3["total"], "0.0000");
     assert_eq!(c3["locked"], "true");
 
     Ok(())

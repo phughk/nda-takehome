@@ -416,72 +416,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispute_partial() -> AnyResult<()> {
-        let service = Service::new(ServiceConfig::default());
-        let mut seq = MessageSequencer::default();
-        let mut buffer = BinaryHeap::new();
-        let (sx, rx) = unbounded_channel();
-        service
-            .iteration(
-                seq.create_message(1, 1, 1000, TransactionType::Deposit, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 2, 200, TransactionType::Withdrawal, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service.handle_buffer(&mut buffer).await?;
-        let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(300));
-        assert_eq!(account.held, Amount::from_major(500));
-        assert_eq!(account.total, Amount::from_major(800));
-        drop(sx);
-        let results = drain_channel(rx).await;
-        assert_eq!(
-            results,
-            vec![(1, 1, Ok(())), (1, 2, Ok(())), (1, 1, Ok(())),]
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_dispute_full_available() -> AnyResult<()> {
-        let service = Service::new(ServiceConfig::default());
-        let mut seq = MessageSequencer::default();
-        let mut buffer = BinaryHeap::new();
-        let (sx, rx) = unbounded_channel();
-        service
-            .iteration(
-                seq.create_message(1, 1, 1000, TransactionType::Deposit, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service.handle_buffer(&mut buffer).await?;
-        let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(500));
-        assert_eq!(account.held, Amount::from_major(500));
-        drop(sx);
-        let results = drain_channel(rx).await;
-        assert_eq!(results, vec![(1, 1, Ok(())), (1, 1, Ok(())),]);
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_dispute_exceeds_available() -> AnyResult<()> {
         let service = Service::new(ServiceConfig::default());
         let mut seq = MessageSequencer::default();
@@ -501,14 +435,17 @@ mod tests {
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 123, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service.handle_buffer(&mut buffer).await?;
         let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(0));
-        assert_eq!(account.held, Amount::from_major(200));
+        assert_eq!(account.available, Amount::from_major(-800));
+        assert_eq!(account.held, Amount::from_major(1000));
+        // NOTE: this is definitely bad, because clearly the account is in the red, but they
+        // have a positive total. I am assuming the rules are important and any variation to this
+        // behavior would need to be agreed in discussion
         assert_eq!(account.total, Amount::from_major(200));
         drop(sx);
         let results = drain_channel(rx).await;
@@ -553,43 +490,6 @@ mod tests {
                 (1, 1, Ok(())),
                 (1, 999, Err(TransactionError::InvalidTransaction)),
             ]
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_resolve_partial() -> AnyResult<()> {
-        let service = Service::new(ServiceConfig::default());
-        let mut seq = MessageSequencer::default();
-        let mut buffer = BinaryHeap::new();
-        let (sx, rx) = unbounded_channel();
-        service
-            .iteration(
-                seq.create_message(1, 1, 1000, TransactionType::Deposit, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 1, 300, TransactionType::Resolve, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service.handle_buffer(&mut buffer).await?;
-        let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(800));
-        assert_eq!(account.held, Amount::from_major(200));
-        drop(sx);
-        let results = drain_channel(rx).await;
-        assert_eq!(
-            results,
-            vec![(1, 1, Ok(())), (1, 1, Ok(())), (1, 1, Ok(())),]
         );
         Ok(())
     }
@@ -692,47 +592,9 @@ mod tests {
             .await?;
         service.handle_buffer(&mut buffer).await?;
         let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(500));
+        assert_eq!(account.available, Amount::from_major(0));
         assert_eq!(account.held, Amount::from_major(0));
-        assert_eq!(account.total, Amount::from_major(500));
-        drop(sx);
-        let results = drain_channel(rx).await;
-        assert_eq!(
-            results,
-            vec![(1, 1, Ok(())), (1, 1, Ok(())), (1, 1, Ok(())),]
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_chargeback_partial_dispute() -> AnyResult<()> {
-        let service = Service::new(ServiceConfig::default());
-        let mut seq = MessageSequencer::default();
-        let mut buffer = BinaryHeap::new();
-        let (sx, rx) = unbounded_channel();
-        service
-            .iteration(
-                seq.create_message(1, 1, 1000, TransactionType::Deposit, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 1, 300, TransactionType::Chargeback, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service.handle_buffer(&mut buffer).await?;
-        let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(700));
-        assert_eq!(account.held, Amount::from_major(0));
-        assert_eq!(account.total, Amount::from_major(700));
+        assert_eq!(account.total, Amount::from_major(0));
         drop(sx);
         let results = drain_channel(rx).await;
         assert_eq!(
@@ -822,7 +684,7 @@ mod tests {
                 (1, 1, Ok(())),
                 (1, 1, Ok(())),
                 (1, 1, Ok(())),
-                (1, 1, Err(TransactionError::TransactionNotDisputed)),
+                (1, 1, Err(TransactionError::TransactionTerminalState)),
             ]
         );
         Ok(())
@@ -842,25 +704,29 @@ mod tests {
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 300, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 123, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 200, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 456, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service.handle_buffer(&mut buffer).await?;
         let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(500));
-        assert_eq!(account.held, Amount::from_major(500));
+        assert_eq!(account.available, Amount::from_major(0));
+        assert_eq!(account.held, Amount::from_major(1000));
         drop(sx);
         let results = drain_channel(rx).await;
         assert_eq!(
             results,
-            vec![(1, 1, Ok(())), (1, 1, Ok(())), (1, 1, Ok(())),]
+            vec![
+                (1, 1, Ok(())),
+                (1, 1, Ok(())),
+                (1, 1, Err(TransactionError::AlreadyDisputed)),
+            ]
         );
         Ok(())
     }
@@ -873,32 +739,32 @@ mod tests {
         let (sx, rx) = unbounded_channel();
         service
             .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Deposit, sx.clone()),
+                seq.create_message(1, 1, 600, TransactionType::Deposit, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 2, 500, TransactionType::Deposit, sx.clone()),
+                seq.create_message(1, 2, 400, TransactionType::Deposit, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 300, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 123, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 2, 400, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 2, 456, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service.handle_buffer(&mut buffer).await?;
         let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(300));
-        assert_eq!(account.held, Amount::from_major(700));
+        assert_eq!(account.available, Amount::from_major(0));
+        assert_eq!(account.held, Amount::from_major(1000));
         drop(sx);
         let results = drain_channel(rx).await;
         assert_eq!(
@@ -927,7 +793,7 @@ mod tests {
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 123, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
@@ -939,42 +805,18 @@ mod tests {
             .await?;
         service.handle_buffer(&mut buffer).await?;
         let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(300));
-        assert_eq!(account.held, Amount::from_major(500));
+        assert_eq!(account.available, Amount::from_major(0));
+        assert_eq!(account.held, Amount::from_major(1000));
         drop(sx);
         let results = drain_channel(rx).await;
         assert_eq!(
             results,
-            vec![(1, 1, Ok(())), (1, 1, Ok(())), (1, 2, Ok(())),]
+            vec![
+                (1, 1, Ok(())),
+                (1, 1, Ok(())),
+                (1, 2, Err(TransactionError::InsufficientBalance)),
+            ]
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_dispute_zero_amount() -> AnyResult<()> {
-        let service = Service::new(ServiceConfig::default());
-        let mut seq = MessageSequencer::default();
-        let mut buffer = BinaryHeap::new();
-        let (sx, rx) = unbounded_channel();
-        service
-            .iteration(
-                seq.create_message(1, 1, 1000, TransactionType::Deposit, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service
-            .iteration(
-                seq.create_message(1, 1, 0, TransactionType::Dispute, sx.clone()),
-                &mut buffer,
-            )
-            .await?;
-        service.handle_buffer(&mut buffer).await?;
-        let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(1000));
-        assert_eq!(account.held, Amount::from_major(0));
-        drop(sx);
-        let results = drain_channel(rx).await;
-        assert_eq!(results, vec![(1, 1, Ok(())), (1, 1, Ok(())),]);
         Ok(())
     }
 
@@ -993,13 +835,13 @@ mod tests {
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 123, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Chargeback, sx.clone()),
+                seq.create_message(1, 1, 456, TransactionType::Chargeback, sx.clone()),
                 &mut buffer,
             )
             .await?;
@@ -1018,27 +860,27 @@ mod tests {
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 100, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 111, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 100, TransactionType::Resolve, sx.clone()),
+                seq.create_message(1, 1, 101, TransactionType::Resolve, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 100, TransactionType::Chargeback, sx.clone()),
+                seq.create_message(1, 1, 143, TransactionType::Chargeback, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service.handle_buffer(&mut buffer).await?;
         let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(500));
+        assert_eq!(account.available, Amount::from_major(0));
         assert_eq!(account.held, Amount::from_major(0));
-        assert_eq!(account.total, Amount::from_major(500));
+        assert_eq!(account.total, Amount::from_major(0));
         assert!(account.locked);
         drop(sx);
         let results = drain_channel(rx).await;
@@ -1155,22 +997,22 @@ mod tests {
         // Dispute and chargeback on client 1 only
         service
             .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 0, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 500, TransactionType::Chargeback, sx.clone()),
+                seq.create_message(1, 1, 0, TransactionType::Chargeback, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service.handle_buffer(&mut buffer).await?;
         // Client 1 should be locked with reduced balance
         let account1 = service.accounts.get(&1).unwrap();
-        assert_eq!(account1.available, Amount::from_major(500));
+        assert_eq!(account1.available, Amount::from_major(0));
         assert_eq!(account1.held, Amount::from_major(0));
-        assert_eq!(account1.total, Amount::from_major(500));
+        assert_eq!(account1.total, Amount::from_major(0));
         assert!(account1.locked);
         // Client 2 should be completely unaffected
         let account2 = service.accounts.get(&2).unwrap();
@@ -1227,8 +1069,8 @@ mod tests {
             .await?;
         service.handle_buffer(&mut buffer).await?;
         let account = service.accounts.get(&1).unwrap();
-        assert_eq!(account.available, Amount::from_major(700));
-        assert_eq!(account.held, Amount::from_major(300));
+        assert_eq!(account.available, Amount::from_major(1000));
+        assert_eq!(account.held, Amount::from_major(0));
         assert_eq!(account.total, Amount::from_major(1000));
         assert!(!account.locked);
         drop(sx);
@@ -1239,7 +1081,7 @@ mod tests {
                 (1, 1, Ok(())),
                 (1, 1, Ok(())),
                 (1, 1, Ok(())),
-                (1, 1, Ok(())),
+                (1, 1, Err(TransactionError::TransactionTerminalState)),
             ]
         );
         Ok(())
@@ -1283,13 +1125,13 @@ mod tests {
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 400, TransactionType::Dispute, sx.clone()),
+                seq.create_message(1, 1, 123, TransactionType::Dispute, sx.clone()),
                 &mut buffer,
             )
             .await?;
         service
             .iteration(
-                seq.create_message(1, 1, 400, TransactionType::Chargeback, sx.clone()),
+                seq.create_message(1, 1, 456, TransactionType::Chargeback, sx.clone()),
                 &mut buffer,
             )
             .await?;
@@ -1301,7 +1143,7 @@ mod tests {
         let lines: Vec<&str> = csv.trim().lines().collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "client,available,held,total,locked");
-        assert_eq!(lines[1], "1,600.0000,0.0000,600.0000,true");
+        assert_eq!(lines[1], "1,0.0000,0.0000,0.0000,true");
         Ok(())
     }
 }

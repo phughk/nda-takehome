@@ -42,11 +42,7 @@ fn assert_invariants(acc: &Account, ctx: &str) {
         "{ctx}: available ({}) must be >= 0",
         acc.available
     );
-    assert!(
-        acc.held >= zero,
-        "{ctx}: held ({}) must be >= 0",
-        acc.held
-    );
+    assert!(acc.held >= zero, "{ctx}: held ({}) must be >= 0", acc.held);
     assert!(
         acc.total >= zero,
         "{ctx}: total ({}) must be >= 0",
@@ -62,7 +58,9 @@ fn assert_invariants(acc: &Account, ctx: &str) {
     );
 
     // State-set invariants: every known tx must be in exactly one set
-    let all_tx_ids: Vec<TransactionId> = acc.normal.iter()
+    let all_tx_ids: Vec<TransactionId> = acc
+        .normal
+        .iter()
         .chain(acc.disputes.iter())
         .chain(acc.resolves.iter())
         .chain(acc.chargebacks.iter())
@@ -80,19 +78,6 @@ fn assert_invariants(acc: &Account, ctx: &str) {
         unique_count,
         "{ctx}: a transaction appears in more than one state set"
     );
-
-    // pending_disputes keys must be for transactions currently in the disputes set
-    for (tx_id, amount) in &acc.pending_disputes {
-        assert!(
-            acc.disputes.contains(tx_id),
-            "{ctx}: pending_dispute for tx {tx_id} but tx not in disputes set"
-        );
-        assert!(
-            *amount > zero,
-            "{ctx}: pending_dispute for tx {tx_id} has non-positive amount {}",
-            amount
-        );
-    }
 
     // If locked, at least one chargeback must have occurred
     if acc.locked {
