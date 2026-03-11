@@ -2,7 +2,7 @@
 
 This doc is entirely human written and describes how I used AI.
 
-# AI Tools used
+# AI Tools used
 
 ## OpenCode + Qwen 3.5-35b-a3b over llama.cpp
 
