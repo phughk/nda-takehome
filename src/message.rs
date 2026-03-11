@@ -22,7 +22,6 @@ pub struct InputMessage {
     pub amount: Amount,
 }
 
-// TODO change this to actually be in a wrapped value
 impl Ord for InputMessage {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reversed for min-heap behavior with BinaryHeap (oldest-first processing).

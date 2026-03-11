@@ -32,7 +32,10 @@
 set -euo pipefail
 
 SPEC="/spec/payments.qnt"
-MAIN="paymentsTests"
+# The `payments` module (matching the filename) is the concrete entry point
+# with all constants bound. The `paymentsTests` module has `run` unit tests.
+MAIN="payments"
+MAIN_TESTS="paymentsTests"
 NIX_SHELL=(
     nix shell
     --extra-experimental-features "nix-command flakes"
@@ -42,14 +45,9 @@ NIX_SHELL=(
 
 ALL_INVARIANTS=(
     totalEqAvailablePlusHeldInv
-    availableNonNegativeInv
     heldNonNegativeInv
-    totalNonNegativeInv
-    heldLeqTotalInv
-    disputedAmountNonNegativeInv
-    chargebackClearsDisputeInv
-    terminalStatesClearDisputeInv
-    disputedHasPositiveAmountInv
+    totalNonNegativeUnlessLockedInv
+    lockedImpliesChargebackInv
     nonExistentTxIsCleanInv
 )
 
@@ -62,8 +60,8 @@ case "$cmd" in
     # ------------------------------------------------------------------
     test)
         shift || true
-        echo "==> quint test --main=${MAIN} ${SPEC} $*"
-        exec "${NIX_SHELL[@]}" quint test --main="${MAIN}" "$@" "${SPEC}"
+        echo "==> quint test --main=${MAIN_TESTS} ${SPEC} $*"
+        exec "${NIX_SHELL[@]}" quint test --main="${MAIN_TESTS}" "$@" "${SPEC}"
         ;;
 
     # ------------------------------------------------------------------

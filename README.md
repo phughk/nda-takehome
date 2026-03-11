@@ -16,34 +16,27 @@ chargebacks, and writes the final account state to stdout.
 ### Transaction lifecycle
 
 - The lifecycle for a deposit or withdrawal is: `Normal → Disputed → Resolved | Chargeback`.
-- A `Resolved` transaction **can be re-disputed**. Subsequent disputes accumulate on top of the existing
-  `disputedAmount` (CONSTRAINTS.md §1: "disputed amounts are cumulative"). This allows a fraudster's reversal to be
-  caught after an initial failed dispute.
-- A `Chargeback` is a terminal state. No further dispute, resolve, or chargeback is permitted on that transaction ID.
+- Both `Resolved` and `Chargeback` are **terminal states**. No further dispute, resolve, or chargeback is permitted on
+  that transaction ID after either is reached.
+- A transaction that is already `Disputed` cannot be disputed again — a second dispute returns `AlreadyDisputed`.
 - Dispute, resolve, and chargeback are only valid on transactions that were originally recorded as a deposit or
   withdrawal. References to unknown transaction IDs are silently ignored.
 - Both **deposit and withdrawal** transactions can be disputed. The spec does not restrict disputes to deposits only.
 
 ### Dispute semantics
 
-- The effective dispute amount is `min(requested, available)`. If available funds are insufficient to cover the full
-  requested amount, the dispute is partially applied up to what is available.
-- A dispute with an effective amount of zero (e.g. requested > 0 but `available == 0`) is a no-op — no state transition
-  occurs and no funds move.
-- Multiple disputes on the same transaction accumulate: each successive dispute moves additional funds from `available`
-  to `held`.
+- Dispute, resolve, and chargeback always use the **original stored transaction amount** — any amount field in those
+  CSV messages is ignored.
+- A dispute moves the full original deposit (or withdrawal) amount from `available` to `held`. This means `available`
+  **can go negative** when a deposit is disputed after a partial withdrawal.
+- A transaction can only be disputed once. A second dispute on an already-disputed transaction returns `AlreadyDisputed`.
 
 ### Resolve and chargeback semantics
 
-- The effective resolve/chargeback amount is `min(requested, disputedAmount)`. Requests exceeding the outstanding
-  disputed amount are capped silently.
-- A **partial resolve** releases only the requested portion back to `available`; the transaction remains in `Disputed`
-  state with the residual `disputedAmount`.
-- A **partial chargeback** debits only the charged-back portion from `total`, but releases **all** remaining held funds
-  for that transaction back to `available` (the non-charged-back disputed portion is no longer held). The account is
-  still locked immediately.
-- `total` is only reduced by the chargeback amount, not by the full disputed amount. `held` is reduced by the full
-  disputed amount. Any surplus returns to `available`.
+- A **resolve** returns the full stored amount from `held` back to `available`. The transaction moves to the terminal
+  `Resolved` state.
+- A **chargeback** removes the full stored amount from `held` and `total`, and locks the account. `total` may go
+  negative on a locked account if the chargedback deposit had already been partially withdrawn.
 
 ### Duplicate transaction IDs
 
@@ -127,14 +120,15 @@ The tests cover two categories:
 
 - Engine never panics on any valid input
 - `total == available + held`
-- `available`, `held`, and `total` are never negative
+- `held` is never negative
+- `total` is non-negative for unlocked accounts (locked accounts may have negative total)
 
 **Targeted properties** — structured random inputs verifying:
 
 - Deposit-only sums are correct
 - Full withdrawal zeros the balance
 - Dispute/resolve round-trip is lossless
-- Chargeback subtracts the disputed amount and locks the account
+- Chargeback removes the full deposit amount and locks the account
 - Locked accounts reject all further mutations
 - Withdrawals cannot overdraw
 - Duplicate transaction IDs are rejected
@@ -145,8 +139,8 @@ The tests cover two categories:
 ### Lifecycle property tests
 
 The `tests/lifecycle_property_tests.rs` file contains property-based tests that drive the `Account` state machine
-directly (no CSV round-trip). This allows inspection of internal state — transaction state sets, pending disputes, held
-amounts, and the locked flag — after every single operation in a randomly generated sequence.
+directly (no CSV round-trip). This allows inspection of internal state — transaction state sets, held amounts, and
+the locked flag — after every single operation in a randomly generated sequence.
 
 ```bash
 # Run all lifecycle property tests (300 random cases each)
@@ -162,28 +156,27 @@ The tests verify:
 after every step:
 
 - `total == available + held` at every step
-- `available`, `held`, `total` never negative at any step
+- `held` never negative at any step
+- `total` non-negative unless account is locked
 - Each transaction appears in exactly one state set (normal, disputed, resolved, or chargeback)
-- Pending dispute entries only exist for transactions in the disputed state
 
 **Transaction lifecycle properties:**
 
 - Deposit/withdrawal sequences never produce negative balances
 - Chargeback permanently locks the account — all subsequent operations return `AccountLocked` and leave balances frozen
 - Dispute/resolve is a lossless round-trip (available and held return to pre-dispute values)
-- Multiple disputes on the same transaction accumulate correctly and a full resolve releases everything
-- Chargeback reduces total by exactly the chargeback amount and zeroes held
+- Chargeback removes the full original deposit amount from total and zeroes held
+- Re-dispute after resolve returns `TransactionTerminalState`
 - Duplicate transaction IDs always return `DuplicateTransaction`
 - Overdraw attempts always return `InsufficientBalance`
 - Disputes on non-existent transactions return `InvalidTransaction` with no side effects
 - Resolves on non-disputed transactions return `TransactionNotDisputed`
-- Resolved transactions can be re-disputed, moving funds back into held
 - Multi-transaction accounts with mixed deposits, withdrawals, and lifecycle actions maintain all invariants
 
 ### Fuzz tests (single account)
 
 The `tests/fuzz_single_account.rs` file throws completely random, unstructured operation sequences at a single `Account`
-and triggers the exhaustive `AccountInvariantGuard` after every step. Unlike the lifecycle tests above, these do not
+and triggers the exhaustive `check_invariants` function after every step. Unlike the lifecycle tests above, these do not
 pre-seed deposits or follow any realistic pattern — the goal is to exercise every code path with arbitrary input and
 verify nothing crashes or corrupts internal state.
 
@@ -195,17 +188,16 @@ cargo test --test fuzz_single_account
 cargo test --test fuzz_single_account single_tx_id_hammered
 ```
 
-The `AccountInvariantGuard` (in `src/domain/account.rs`) checks the following after every operation:
+The `check_invariants` function (in `src/domain/account.rs`, active in debug builds only) checks the following after
+every operation:
 
-- **Balances**: `available >= 0`, `held >= 0`, `total >= 0`, `total == available + held`
+- **Balances**: `total == available + held`; `total >= 0` unless account is locked
 - **Set membership**: every transaction in the map appears in exactly one state set (normal, disputes, resolves,
   chargebacks) and vice versa — no orphans in either direction
 - **State consistency**: the set each transaction is in matches its recorded `TransactionState` enum value
 - **Set disjointness**: all six pairwise intersections between the four state sets are empty
 - **Set-map size**: the sum of the four set sizes equals the transactions map size
-- **Pending disputes**: every `pending_disputes` key is in the disputes set with a positive amount; every disputes-set
-  member has a `pending_disputes` entry
-- **Held consistency**: `held` equals the sum of all `pending_disputes` values
+- **Held consistency**: `held` equals the sum of all disputed transaction amounts
 - **Lock semantics**: if locked, at least one chargeback exists
 
 The five test variants cover:
@@ -241,14 +233,16 @@ Then run the tests or simulator directly:
 # Run all named tests
 quint test --main=paymentsTests payments.qnt
 
-# Random simulation — check the combined safety invariant
-quint run --main=paymentsTests --invariant=safetyInv payments.qnt
+# Random simulation (uses the `payments` module, derived from the filename)
+quint run payments.qnt
+
+# Check the combined safety invariant
+quint run payments.qnt --invariant=safetyInv
 
 # Check a specific invariant with more samples
-quint run --main=paymentsTests \
+quint run payments.qnt \
     --invariant=totalEqAvailablePlusHeldInv \
-    --max-samples=50000 \
-    payments.qnt
+    --max-samples=50000
 ```
 
 ## Docker image

@@ -75,7 +75,6 @@ async fn main() -> AnyResult<()> {
                 }
             }
         }
-        // TODO add labels
         METRICS.pipeline_transactions_ok.add(ok_count, &[]);
         METRICS.pipeline_transactions_failed.add(err_count, &[]);
         Ok(())
@@ -89,7 +88,6 @@ async fn main() -> AnyResult<()> {
                 match r {
                     None => {
                         trace!("All tasks finished")
-                        // TODO break ?? maybe
                     }
                     Some(Ok(Err(e))) => {
                         let e = e.context("Task returned error");
