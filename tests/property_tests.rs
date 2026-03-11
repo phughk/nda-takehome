@@ -99,8 +99,11 @@ async fn run_engine(rows: &[CsvRow]) -> AnyResult<Vec<OutputRow>> {
     let mut tmpfile = NamedTempFile::new()?;
     tmpfile.write_all(csv_content.as_bytes())?;
 
-    let reader = CsvReader::new(tmpfile.path());
-    let messages = reader.read_messages().await?;
+    let mut reader = CsvReader::new(tmpfile.path()).await?;
+    let mut messages = Vec::new();
+    while let Some(msg) = reader.next().await? {
+        messages.push(msg);
+    }
 
     let service = Service::new(ServiceConfig::default());
     let ctx = tokio_util::sync::CancellationToken::new();

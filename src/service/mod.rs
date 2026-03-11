@@ -231,9 +231,37 @@ pub enum ServiceMessage {
 mod tests {
     use super::*;
     use crate::domain::amount::Amount;
-    use crate::domain::sequencer::MessageSequencer;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::mpsc::UnboundedReceiver;
+
+    /// Test helper that creates [`ServiceMessage`]s with auto-incrementing chrono order.
+    #[derive(Default)]
+    pub struct MessageSequencer(u64);
+
+    impl MessageSequencer {
+        /// Builds a [`ServiceMessage::Incoming`] with the next chrono order value.
+        pub fn create_message(
+            &mut self,
+            client_id: ClientId,
+            transaction_id: TransactionId,
+            amount: i64,
+            transaction_type: TransactionType,
+            sx: UnboundedSender<(ClientId, TransactionId, Result<(), TransactionError>)>,
+        ) -> ServiceMessage {
+            let chrono_order = self.0;
+            self.0 += 1;
+            ServiceMessage::Incoming(
+                Box::new(InputMessage {
+                    chrono_order,
+                    transaction_type,
+                    client_id,
+                    transaction_id,
+                    amount: Amount::from_major(amount),
+                }),
+                sx,
+            )
+        }
+    }
 
     /// Drains all pending messages from the channel, waiting up to 5s for each one.
     /// Drop the sender before calling so the function returns as soon as the channel

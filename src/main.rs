@@ -121,7 +121,7 @@ async fn main() -> AnyResult<()> {
     Ok(())
 }
 
-/// Reads a CSV file, sends each parsed message via `record_callback`,
+/// Reads a CSV file lazily, sending each parsed message via `record_callback`,
 /// then signals completion via `file_callback`.
 async fn load_file<
     ItemCallback: AsyncFn(Box<InputMessage>) -> AnyResult<()>,
@@ -132,16 +132,16 @@ async fn load_file<
     file_callback: FileCallback,
 ) -> AnyResult<()> {
     let load_start = Instant::now();
-    let reader = CsvReader::new(&path);
-    let messages = reader.read_messages().await?;
-    let msg_count = messages.len();
+    let mut reader = CsvReader::new(&path).await?;
+    let mut msg_count = 0u64;
 
-    for msg in messages {
+    while let Some(msg) = reader.next().await? {
+        msg_count += 1;
         record_callback(Box::new(msg)).await?;
     }
 
     let load_elapsed = load_start.elapsed();
-    METRICS.pipeline_messages_enqueued.add(msg_count as u64, &[]);
+    METRICS.pipeline_messages_enqueued.add(msg_count, &[]);
     METRICS
         .pipeline_load_duration
         .record(load_elapsed.as_secs_f64() * 1000.0, &[]);

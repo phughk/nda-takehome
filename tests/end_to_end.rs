@@ -8,8 +8,11 @@ use tokio_util::sync::CancellationToken;
 #[tokio::test]
 async fn test_end_to_end_basic_csv() -> AnyResult<()> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/basic.csv");
-    let reader = CsvReader::new(path);
-    let messages = reader.read_messages().await?;
+    let mut reader = CsvReader::new(path).await?;
+    let mut messages = Vec::new();
+    while let Some(msg) = reader.next().await? {
+        messages.push(msg);
+    }
 
     let service = Service::new(ServiceConfig::default());
     let ctx = CancellationToken::new();
